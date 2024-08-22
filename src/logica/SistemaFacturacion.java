@@ -1,6 +1,7 @@
 package logica;
 
 import java.sql.*;
+import java.util.InputMismatchException;
 import java.util.Scanner;
 
 public class SistemaFacturacion {
@@ -14,10 +15,7 @@ public class SistemaFacturacion {
             System.out.println("1. Registrar cliente");
             System.out.println("2. Registrar producto");
             System.out.println("3. Consultar datos de cliente");
-            System.out.println("4. Crear factura");
-            System.out.println("5. Agregar producto a factura");
-            System.out.println("6. Aplicar descuento a factura");
-            System.out.println("7. Mostrar total de factura");
+            System.out.println("4. Crear y procesar factura");
             System.out.println("0. Salir");
             System.out.print("Elija una opción: ");
             int opcion = scanner.nextInt();
@@ -34,16 +32,7 @@ public class SistemaFacturacion {
                     consultarDatosCliente(connection, scanner);
                     break;
                 case 4:
-                    crearFactura(connection, scanner);
-                    break;
-                case 5:
-                    agregarProductoAFactura(connection, scanner);
-                    break;
-                case 6:
-                    aplicarDescuentoAFactura(connection, scanner);
-                    break;
-                case 7:
-                    mostrarTotalFactura(connection, scanner);
+                    procesarFactura(connection, scanner);
                     break;
                 case 0:
                     System.out.println("Saliendo del sistema...");
@@ -75,17 +64,25 @@ public class SistemaFacturacion {
             scanner.nextLine(); // Limpiar el buffer
 
             String insertClienteSQL = "INSERT INTO clientes (nombre, apellido, estrato) VALUES (?, ?, ?)";
-            PreparedStatement statement = connection.prepareStatement(insertClienteSQL);
+            PreparedStatement statement = connection.prepareStatement(insertClienteSQL, Statement.RETURN_GENERATED_KEYS);
             statement.setString(1, nombre);
             statement.setString(2, apellido);
             statement.setInt(3, estrato);
             statement.executeUpdate();
 
-            System.out.println("Cliente registrado exitosamente.");
+            // Obtener el ID generado
+            ResultSet generatedKeys = statement.getGeneratedKeys();
+            if (generatedKeys.next()) {
+                int idCliente = generatedKeys.getInt(1);
+                System.out.println("Cliente registrado exitosamente con ID: " + idCliente);
+            } else {
+                System.out.println("No se pudo obtener el ID del cliente.");
+            }
         } catch (SQLException e) {
             e.printStackTrace();
         }
     }
+
 
     private static void registrarProducto(Connection connection, Scanner scanner) {
         try {
@@ -188,79 +185,89 @@ public class SistemaFacturacion {
         }
     }
 
-    private static void crearFactura(Connection connection, Scanner scanner) {
-        try {
-            System.out.print("Ingrese el ID del cliente: ");
-            int idCliente = scanner.nextInt();
-            scanner.nextLine(); // Limpiar el buffer
-            System.out.print("Ingrese la fecha de la factura (yyyy-mm-dd): ");
-            String fecha = scanner.nextLine();
+    private static void procesarFactura(Connection connection, Scanner scanner) {
+    try {
+        System.out.print("Ingrese el ID del cliente: ");
+        int idCliente = scanner.nextInt();
+        scanner.nextLine(); // Limpiar el buffer después de leer el ID del cliente
 
-            String insertFacturaSQL = "INSERT INTO facturas (id_cliente, fecha) VALUES (?, ?)";
-            PreparedStatement statement = connection.prepareStatement(insertFacturaSQL);
-            statement.setInt(1, idCliente);
-            statement.setString(2, fecha);
-            statement.executeUpdate();
+        // Crear factura
+        String insertFacturaSQL = "INSERT INTO facturas (id_cliente, fecha) VALUES (?, NOW())";
+        PreparedStatement statement = connection.prepareStatement(insertFacturaSQL, Statement.RETURN_GENERATED_KEYS);
+        statement.setInt(1, idCliente);
+        statement.executeUpdate();
 
-            System.out.println("Factura creada exitosamente.");
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
-    }
+        ResultSet generatedKeys = statement.getGeneratedKeys();
+        if (generatedKeys.next()) {
+            int idFactura = generatedKeys.getInt(1);
+            System.out.println("Factura creada con ID: " + idFactura);
 
-    private static void agregarProductoAFactura(Connection connection, Scanner scanner) {
-        try {
-            System.out.print("Ingrese el ID de la factura: ");
-            int idFactura = scanner.nextInt();
-            System.out.print("Ingrese el ID del producto: ");
-            int idProducto = scanner.nextInt();
-            System.out.print("Ingrese la cantidad: ");
-            int cantidad = scanner.nextInt();
-            scanner.nextLine(); // Limpiar el buffer
+            // Agregar productos a la factura
+            while (true) {
+                System.out.print("Ingrese el ID del producto (0 para terminar): ");
+                int idProducto = scanner.nextInt();
+                if (idProducto == 0) break;
 
-            String queryProducto = "SELECT precio FROM productos WHERE id = ?";
-            PreparedStatement statementProducto = connection.prepareStatement(queryProducto);
-            statementProducto.setInt(1, idProducto);
-            ResultSet resultSetProducto = statementProducto.executeQuery();
-            double precio = 0;
-            if (resultSetProducto.next()) {
-                precio = resultSetProducto.getDouble("precio");
-            } else {
-                System.out.println("Producto no encontrado.");
-                return;
+                System.out.print("Ingrese la cantidad: ");
+                int cantidad = scanner.nextInt();
+                scanner.nextLine(); // Limpiar el buffer después de leer la cantidad
+
+                double precio = obtenerPrecioProducto(connection, idProducto);
+                double subtotal = precio * cantidad;
+
+                String insertDetalleSQL = "INSERT INTO detalle_factura (id_factura, id_producto, cantidad, subtotal) VALUES (?, ?, ?, ?)";
+                PreparedStatement detalleStatement = connection.prepareStatement(insertDetalleSQL);
+                detalleStatement.setInt(1, idFactura);
+                detalleStatement.setInt(2, idProducto);
+                detalleStatement.setInt(3, cantidad);
+                detalleStatement.setDouble(4, subtotal);
+                detalleStatement.executeUpdate();
             }
 
-            double subtotal = precio * cantidad;
-            String insertDetalleSQL = "INSERT INTO detalle_factura (id_factura, id_producto, cantidad, subtotal) VALUES (?, ?, ?, ?)";
-            PreparedStatement statementDetalle = connection.prepareStatement(insertDetalleSQL);
-            statementDetalle.setInt(1, idFactura);
-            statementDetalle.setInt(2, idProducto);
-            statementDetalle.setInt(3, cantidad);
-            statementDetalle.setDouble(4, subtotal);
-            statementDetalle.executeUpdate();
+            // Preguntar si se aplica un descuento
+            System.out.print("¿Desea aplicar un descuento? (s/n): ");
+            String aplicarDescuento = scanner.nextLine().trim();
+            double descuento = 0;
+            if (aplicarDescuento.equalsIgnoreCase("s")) {
+                System.out.print("Ingrese el porcentaje de descuento: ");
+                descuento = scanner.nextDouble();
+                scanner.nextLine(); // Limpiar el buffer después de leer el descuento
+            }
 
-            System.out.println("Producto agregado a la factura exitosamente.");
-        } catch (SQLException e) {
-            e.printStackTrace();
+            double totalFactura = calcularTotalFactura(connection, idFactura, descuento);
+            System.out.printf("Total gastado en la factura: %.2f\n", totalFactura);
+
+            // Actualizar total gastado del cliente
+            actualizarTotalGastadoCliente(connection, idCliente, totalFactura);
+
+            System.out.println("Gracias por su compra, ¡que tenga un buen día!");
+        } else {
+            System.out.println("Error al crear la factura.");
+        }
+    } catch (SQLException e) {
+        e.printStackTrace();
+    } catch (InputMismatchException e) {
+        System.out.println("Entrada inválida. Por favor ingrese datos válidos.");
+        scanner.nextLine(); // Limpiar el buffer en caso de error de entrada
+    }
+}
+
+
+    private static double obtenerPrecioProducto(Connection connection, int idProducto) throws SQLException {
+        String query = "SELECT precio FROM productos WHERE id = ?";
+        PreparedStatement statement = connection.prepareStatement(query);
+        statement.setInt(1, idProducto);
+        ResultSet resultSet = statement.executeQuery();
+
+        if (resultSet.next()) {
+            return resultSet.getDouble("precio");
+        } else {
+            System.out.println("Producto no encontrado.");
+            return 0;
         }
     }
 
-    private static void aplicarDescuentoAFactura(Connection connection, Scanner scanner) {
-        try {
-            System.out.print("Ingrese el ID de la factura: ");
-            int idFactura = scanner.nextInt();
-            System.out.print("Ingrese el porcentaje de descuento: ");
-            double descuento = scanner.nextDouble();
-            scanner.nextLine(); // Limpiar el buffer
-
-            double totalConDescuento = calcularTotalConDescuento(connection, idFactura, descuento);
-            System.out.printf("Total con descuento aplicado: %.2f\n", totalConDescuento);
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private static double calcularTotalConDescuento(Connection connection, int idFactura, double porcentajeDescuento) throws SQLException {
+    private static double calcularTotalFactura(Connection connection, int idFactura, double porcentajeDescuento) throws SQLException {
         String query = "SELECT SUM(subtotal) AS total FROM detalle_factura WHERE id_factura = ?";
         PreparedStatement statement = connection.prepareStatement(query);
         statement.setInt(1, idFactura);
@@ -275,30 +282,11 @@ public class SistemaFacturacion {
         return total - descuento;
     }
 
-    private static void mostrarTotalFactura(Connection connection, Scanner scanner) {
-        try {
-            System.out.print("Ingrese el ID de la factura: ");
-            int idFactura = scanner.nextInt();
-            scanner.nextLine(); // Limpiar el buffer
-
-            double total = calcularTotalFactura(connection, idFactura);
-            System.out.printf("Total de la factura: %.2f\n", total);
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private static double calcularTotalFactura(Connection connection, int idFactura) throws SQLException {
-        String query = "SELECT SUM(subtotal) AS total FROM detalle_factura WHERE id_factura = ?";
+    private static void actualizarTotalGastadoCliente(Connection connection, int idCliente, double totalFactura) throws SQLException {
+        String query = "UPDATE clientes SET total_gastado = total_gastado + ? WHERE id = ?";
         PreparedStatement statement = connection.prepareStatement(query);
-        statement.setInt(1, idFactura);
-        ResultSet resultSet = statement.executeQuery();
-
-        double total = 0;
-        if (resultSet.next()) {
-            total = resultSet.getDouble("total");
-        }
-
-        return total;
+        statement.setDouble(1, totalFactura);
+        statement.setInt(2, idCliente);
+        statement.executeUpdate();
     }
 }
